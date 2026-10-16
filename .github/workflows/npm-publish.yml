@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: # manual "Run workflow" button (retry/resume publishing)
 
 jobs:
   publish:
