@@ -1,0 +1,50 @@
+{
+  "name": "itunesdb-ts",
+  "version": "1.0.0",
+  "description": "A JavaScript/TypeScript library for reading and writing to an iPod's iTunesDB and ArtworkDB. It will write the music and photo files to the device.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx src/__tests__/validate.ts",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm run build && npm test"
+  },
+  "keywords": [
+    "ipod",
+    "itunes",
+    "itunesdb",
+    "artworkdb",
+    "libgpod",
+    "music",
+    "sync"
+  ],
+  "license": "MIT",
+  "author": "brandonjames-dev@outlook.com",
+  "optionalDependencies": {
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true
+  }
+}
