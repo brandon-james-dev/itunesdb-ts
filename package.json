@@ -35,6 +35,14 @@
   ],
   "license": "MIT",
   "author": "brandonjames-dev@outlook.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brandon-james-dev/itunesdb-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/brandon-james-dev/itunesdb-ts/issues"
+  },
+  "homepage": "https://github.com/brandon-james-dev/itunesdb-ts#readme",
   "optionalDependencies": {
     "sharp": "^0.35.5"
   },
