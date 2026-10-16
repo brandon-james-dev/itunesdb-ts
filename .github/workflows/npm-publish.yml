@@ -10,8 +10,11 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write # for npm provenance
+      contents: read # to checkout the code
+      id-token: write # The OIDC ID token is used for authentication and for provenance
+      # The keyless authentication to npm is authorized by this OIDC token —
+      # no NODE_AUTH_TOKEN secret is used.
+      packages: read
 
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +29,5 @@ jobs:
 
       # `npm publish` runs the prepublishOnly script (lint + build + test),
       # so publishing is blocked unless all checks pass.
-      - name: Publish to npm
+      - name: Publish to npm (Trusted Publishing)
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
