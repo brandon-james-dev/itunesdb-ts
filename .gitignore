@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Scratch AES test rig (see git history for original)
+aesunit.ts
