@@ -1,6 +1,12 @@
 # itunesdb-ts
 
+[![npm version](https://img.shields.io/npm/v/itunesdb-ts.svg)](https://www.npmjs.com/package/itunesdb-ts)
+[![npm downloads](https://img.shields.io/npm/dm/itunesdb-ts.svg)](https://www.npmjs.com/package/itunesdb-ts)
+[![license](https://img.shields.io/npm/l/itunesdb-ts.svg)](https://github.com/brandon-james-dev/itunesdb-ts/blob/main/LICENSE)
+
 A JavaScript/TypeScript library for reading and writing iPod database files (`iTunesDB` and `ArtworkDB`). Works in **browser**, **Node.js**, and **Tauri** runtimes.
+
+Published on npm as [`itunesdb-ts`](https://www.npmjs.com/package/itunesdb-ts).
 
 Inspired by [libgpod](https://github.com/AdrienClerworksgeot/libgpod), rewritten from scratch in TypeScript with a focus on cross-runtime compatibility and round-trip fidelity.
 
