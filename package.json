@@ -1,6 +1,6 @@
 {
   "name": "itunesdb-ts",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A JavaScript/TypeScript library for reading and writing to an iPod's iTunesDB and ArtworkDB. It will write the music and photo files to the device.",
   "type": "module",
   "main": "./dist/index.js",
