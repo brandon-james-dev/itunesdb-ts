@@ -16,13 +16,16 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "build": "tsc",
     "test": "node --import tsx src/__tests__/validate.ts",
     "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run lint && npm run build && npm test"
+    "prepublishOnly": "npm run lint && npm run build && npm test",
+    "release:patch": "npm version patch -m \"Release %s\"",
+    "release:minor": "npm version minor -m \"Release %s\"",
+    "release:major": "npm version major -m \"Release %s\""
   },
   "keywords": [
     "ipod",

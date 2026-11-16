@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted publishing needs npm CLI >= 11.5.1 and Node >= 22.14.0.
+          # Node 20 ships npm 10.8.2 and Node 22.14 ships 10.9.2, both below
+          # that floor, so the publish step fails with an auth error on either.
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # A tag that disagrees with package.json would publish one version and
+      # label the release another, so fail before anything is published.
+      - name: Check tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          fi
+          echo "Releasing $version"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      # prepublishOnly repeats lint/build/test; that is deliberate, so a local
+      # `npm publish` cannot skip them either.
+      #
+      # No NODE_AUTH_TOKEN here on purpose: the npm CLI detects the OIDC
+      # environment and exchanges the workflow's id-token for a short-lived
+      # publish token. Setting a token would take precedence and defeat it.
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+
+      - name: Pack tarball for the release
+        run: npm pack
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            itunesdb-ts-*.tgz
