@@ -4,6 +4,7 @@ import type { ItdbTrack, ItdbDataObject } from './types.js';
 import { writeDataObject } from './writeDataObject.js';
 import { randomLibraryId } from '../database/writeDatabase.js';
 import { MHOD_STRING_FIELDS } from './parseDataObject.js';
+import { APPLE_TRACK_TEMPLATE } from './appleTrackTemplate.js';
 
 /**
  * Write a single MHIT (track) record and its MHOD children.
@@ -25,7 +26,16 @@ export function writeTrack(writer: ItdbBinaryWriter, track: ItdbTrack, libraryId
   } else {
     writer.writeMagic('mhit');
     writer.writeUint32(headerLen);
-    writer.skip(headerLen - 8);
+    // Start from Apple's own known-good header bytes (see
+    // appleTrackTemplate.ts) instead of zeros: every unmodelled field —
+    // soundcheck, the audio-offset region, the sample-count/gapless trio,
+    // the flag constants — then carries Apple's exact nonzero values on
+    // every track we synthesize | Apple's own parser reads a zero there as
+    // malformed (proven: identical env accepts Apple's file, rejects ours,
+    // while every modeled field + both checksums match).
+    const tail = Math.min(headerLen - 8, APPLE_TRACK_TEMPLATE.length - 8);
+    writer.writeBytes(APPLE_TRACK_TEMPLATE.subarray(8, 8 + tail));
+    writer.skip(headerLen - 8 - tail);
   }
 
   writer.seek(startOffset + 4);
@@ -58,10 +68,16 @@ export function writeTrack(writer: ItdbBinaryWriter, track: ItdbTrack, libraryId
   writer.writeUint32(track.year);
   writer.writeUint32(track.bitrate);
   writer.writeUint32((track.sampleRate << 16) >>> 0);
-  writer.writeInt32(track.volume);
-  writer.writeUint32(track.startTime);
-  writer.writeUint32(track.stopTime);
-  writer.writeUint32(track.soundCheck);
+  // Audio-derived block (+0x40..+0x4f): with the Apple template as base,
+  // only write a value when the caller actually provided one. Leave the
+  // template bytes otherwise — soundcheck (+0x4c) in particular is written
+  // by Apple on every accepted track and a zero reads malformed to the
+  // parser (verified on all 9 apple records). Writing `0` here would undo
+  // the template.
+  if (track.volume) writer.writeInt32(track.volume); else writer.skip(4);
+  if (track.startTime) writer.writeUint32(track.startTime); else writer.skip(4);
+  if (track.stopTime) writer.writeUint32(track.stopTime); else writer.skip(4);
+  if (track.soundCheck) writer.writeUint32(track.soundCheck); else writer.skip(4);
   writer.writeUint32(track.playCount);
   writer.writeUint32(track.playCount);
   writer.writeUint32(track.lastPlayed);
@@ -81,6 +97,15 @@ export function writeTrack(writer: ItdbBinaryWriter, track: ItdbTrack, libraryId
   // +0x90 unk144 — libgpod's set_defaults writes 0x000c for MP3/AAC audio
   // (an "audio" indicator byte pair); Apple's accepted tracks carry 0x000c.
   writer.writeUint16(track.unk144 ?? 0x000c);
+  // +0x92/0x93 — Apple writes the constant u16 0x0100 (bytes 00 01 LE) in
+  // EVERY accepted track (verified on all 8 fixture tracks and the
+  // iTunes-written track). We were leaving it 0; a zeroed flag reads as a
+  // malformed track.
+  if (track.rawHeader.length === 0) {
+    writer.writeUint16(0x0100);
+  } else {
+    writer.skip(2);
+  }
 
   writer.seek(startOffset + 0xA4);
   writer.writeUint8(track.hasArtwork ?? (track.artworkCount > 0 ? 1 : 0));
@@ -90,10 +115,30 @@ export function writeTrack(writer: ItdbBinaryWriter, track: ItdbTrack, libraryId
   // every accepted Apple track carries the same value as dbid at +0x70.
   writer.writeUint64(track.dbid2 ?? track.dbid);
 
+  // +0xcc / +0xcf — Apple writes the constants 0x03 (unk220) and 0x02
+  // (unk204) in EVERY accepted track (all 8 fixture + iTunes-written);
+  // ours were 0. Only fresh tracks — parsed tracks keep original bytes.
+  if (track.rawHeader.length === 0) {
+    writer.seek(startOffset + 0xcc);
+    writer.writeUint8(0x03); // unk220 — Apple invariant
+    writer.seek(startOffset + 0xcf);
+    writer.writeUint8(0x02); // unk204 — Apple invariant
+  }
+
   writer.seek(startOffset + 0xD0);
-  writer.writeUint32(track.mediatype);
-  writer.writeUint32(track.seasonNumber);
-  writer.writeUint32(track.episodeNumber);
+  // mediatype (+0xd0): Apple writes 1 for ordinary audio in the template;
+  // a fresh TrackMeta never sets it (defaults 0) but a 0 mediatype is the
+  // malformed class again. Keep the template's 1 unless the caller set one.
+  if (track.mediatype) writer.writeUint32(track.mediatype); else writer.skip(4);
+  if (track.seasonNumber) writer.writeUint32(track.seasonNumber); else writer.skip(4);
+  if (track.episodeNumber) writer.writeUint32(track.episodeNumber); else writer.skip(4);
+
+  // +0x100 — Apple writes the gapless track flag 0x01 in EVERY accepted
+  // track; ours was 0. Only fresh tracks.
+  if (track.rawHeader.length === 0) {
+    writer.seek(startOffset + 0x100);
+    writer.writeUint8(0x01); // gapless track flag — Apple invariant
+  }
 
   writer.seek(startOffset + 0x120);
   writer.writeUint32(track.albumId);
@@ -111,24 +156,27 @@ export function writeTrack(writer: ItdbBinaryWriter, track: ItdbTrack, libraryId
   writer.writeUint32(track.size);
   // +0x130: 0
   writer.writeUint32(0);
-  // +0x134: gapless/samplecount padding marker — libgpod writes
-  // `0x808080808080` as a 64-bit value (8 bytes: `80×6 + 00 00`) here
-  // ("what the heck is this?!"), and Apple's accepted DBs carry the same
-  // 8-byte pattern. We were writing 6 bytes at the wrong offset, shifting
-  // the whole region below. Only write it for fresh/synthesized tracks —
-  // preserved tracks keep their original bytes from rawHeader.
-  if (track.rawHeader.length === 0) {
-    writer.writeUint64(0x808080808080n);
-  } else {
-    writer.skip(8);
-  }
+  // +0x134: gapless/samplecount padding marker. The Apple template already
+  // carries the device's own accepted bytes here (0x80 0x8x 0x80 0x80 0x80
+  // 0x80 …), so every track inherits them — an explicit write would
+  // overwrite Apple's exact byte (e.g. 0x81 at +0x135 on the iTunes-written
+  // record) and reintroduce a diff. Skip the 8 bytes either way so the
+  // sequential +0x13c write below lands at the right offset.
+  writer.skip(8);
   // +0x13c: 0
   writer.writeUint32(0);
 
   writer.seek(startOffset + 0x160);
   writer.writeUint32(track.mhiiLink);
   writer.skip(4); // 0x164
-  writer.writeUint32(1); // 0x168 (Apple writes 1, libgpod hardcodes it)
+  // +0x195 — Apple writes the constant 0x01 (unk405) in EVERY accepted
+  // track; ours was 0. Only fresh tracks.
+  if (track.rawHeader.length === 0) {
+    writer.seek(startOffset + 0x195);
+    writer.writeUint8(0x01); // unk405 — Apple invariant
+  }
+  writer.seek(startOffset + 0x168); // 0x168 (Apple writes 1, libgpod hardcodes it)
+  writer.writeUint32(1);
 
   writer.seek(startOffset + 0x1E0);
   // artist_id — Apple/tunesreloaded write the ARTIST's own catalog id here
@@ -146,9 +194,16 @@ export function writeTrack(writer: ItdbBinaryWriter, track: ItdbTrack, libraryId
   writer.seek(startOffset + 0x88);
   // samplerate2 (float) — the reference track carries ~44100.0 here (we
   // were leaving it 0). Write the track's sample rate as a float32.
-  const srBuf = new Uint8Array(4);
-  new DataView(srBuf.buffer).setFloat32(0, track.sampleRate, true);
-  for (const b of srBuf) writer.writeUint8(b);
+  // samplerate2 float (+0x88) — keep template when unset (Apple writes
+  // 44100.0 there; a 0.0 float is the same class of malformed as a zeroed
+  // constant).
+  if (track.sampleRate > 0) {
+    const srBuf = new Uint8Array(4);
+    new DataView(srBuf.buffer).setFloat32(0, track.sampleRate, true);
+    for (const b of srBuf) writer.writeUint8(b);
+  } else {
+    writer.skip(4);
+  }
   writer.seek(startOffset + 0xB0);
   // +0xb0: lyrics_flag, movie_flag, mark_unplayed, unk179. mark_unplayed is
   // PER-TRACK STATE (Apple's accepted DB carries 1 on one track, 2 on
@@ -160,10 +215,20 @@ export function writeTrack(writer: ItdbBinaryWriter, track: ItdbTrack, libraryId
   if (track.rawHeader.length === 0) {
     writer.writeUint8(0);   // lyrics_flag
     writer.writeUint8(0);   // movie_flag
-    writer.writeUint8(1);   // mark_unplayed default (libgpod set_defaults)
+    writer.writeUint8(2);   // mark_unplayed — Apple writes 2 in EVERY
+    // accepted track (fixture + iTunes-written); libgpod defaults to 1 but
+    // Apple's parser expects 2. Verified byte-level on all 9 Apple tracks.
     writer.writeUint8(0);   // unk179
   } else {
     // preserved: the 4 bytes after +0xb0 came from rawHeader; keep them.
+  }
+  // +0xb8/0xb9 — Apple writes the constant u16 0x0210 in EVERY accepted
+  // track (all 8 fixture + iTunes-written; ours was 0). Also the existence
+  // of this field shifts nothing — it sits in the reserved tail. Fresh
+  // tracks must carry it or the track reads as malformed.
+  if (track.rawHeader.length === 0) {
+    writer.seek(startOffset + 0xb8);
+    writer.writeUint16(0x0210);
   }
   writer.seek(startOffset + headerLen);
 

@@ -57,8 +57,13 @@ export function parsePlaylist(reader: ItdbBinaryReader): { playlist: ItdbPlaylis
     const itemHeaderLen = reader.readUint32();
     const itemTotalLen = reader.readUint32();
     const itemMhodNum = reader.readUint32();
-    reader.skip(8);
-    const trackId = reader.readUint32();
+    // Apple's mhip: +0x0c mhodNum, +0x10 padding, +0x14 = an index/offset
+    // field (trackId + 6), +0x18 = the item's ACTUAL trackId (matches the
+    // track record). Read the authoritative reference at +0x18 so
+    // item.trackId equals the track's trackId (2351, not 2357). The +0x14
+    // offset field is preserved verbatim in rawHeader + rewritten on save.
+    reader.skip(8);            // skip +0x10 padding AND +0x14 offset field
+    const trackId = reader.readUint32();   // +0x18 = the track reference
     const itemTimestamp = reader.readUint32();
 
     const itemRawHeader = new Uint8Array(reader.subreader(itemStart).readBytes(itemHeaderLen));

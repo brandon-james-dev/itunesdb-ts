@@ -4,6 +4,7 @@ import { createDefaultFs, createDefaultImageDecoder } from '../common/env.js';
 import { dateToMac } from '../common/constants/index.js';
 import { ITUNESDB_HEADER_SIZES } from '../itunesdb/constants/index.js';
 import type { ItdbDeviceInfo, ItdbArtworkFormat, ItdbPixelFormat, ItdbGeneration } from '../device/types.js';
+import { detectDevice } from '../device/detectDevice.js';
 import { readSysInfo, SYSTEM_DIR } from '../device/sysInfo.js';
 import { checksumTypeForDevice, applyHash58, applyHash72, buildHashInfo, extractHash72IvRandom } from '../common/checksum/index.js';
 import type { ItdbImageDecoder, ItdbRawImage } from '../artworkdb/artwork/index.js';
@@ -209,7 +210,7 @@ function newDatabase(masterName: string, generation?: ItdbGeneration): ITunesDB 
           { index: 1, kind: 'tracks' },
           { index: 3, kind: 'playlists' },
           { index: 2, kind: 'playlists' },
-          { index: 5, kind: 'events' },
+          { index: 5, kind: 'playlists' },
         ]
       : [],
     rawHeader: new Uint8Array(0),
@@ -395,10 +396,24 @@ export class Itdb implements Disposable {
     const sys = await readSysInfo(fs);
     if (sys && opts.device) {
       const d = opts.device;
+      // The most authoritative model identity comes from the device's own
+      // SysInfo: `ModelNumStr` distinguishes capacity variants that the USB
+      // product ID cannot (e.g. every nano 4G shares PID 0x1263, but
+      // MB598 = 8GB vs MB903/MB907 = 16GB). Resolve it like libgpod does,
+      // so `resolvedDevice.capacityGB` reports the real unit — otherwise a
+      // 16GB nano shows 8GB of (wrong) free space.
+      let sysModel: ItdbDeviceInfo | undefined;
+      if (sys.modelNumber) {
+        try {
+          sysModel = detectDevice(sys.modelNumber);
+        } catch {
+          // Unknown model number in SysInfo — keep the caller's device.
+        }
+      }
       opts.device = {
-        ...d,
-        firewireGuid: d.firewireGuid ?? sys.firewireGuid,
-        serialNumber: d.serialNumber ?? sys.serialNumber,
+        ...(sysModel ?? d),
+        firewireGuid: sysModel?.firewireGuid ?? d.firewireGuid ?? sys.firewireGuid,
+        serialNumber: sysModel?.serialNumber ?? d.serialNumber ?? sys.serialNumber,
       };
     }
     return new Itdb(fs, db, artwork, opts, originalItunesDb, bakMaxId);
@@ -1253,12 +1268,20 @@ export class Itdb implements Disposable {
         if (isMasterPlaylist(p)) {
           // The master is the library list by definition — it must be
           // exactly the live tracks, 1:1, no duplicates, no phantoms.
-          p.items = this.db.tracks.map((t) => ({
-            trackId: t.trackId,
-            timestamp: dateToMac(new Date()),
-            rawHeader: new Uint8Array(0),
-          }));
-        } else if (p.items.length > liveIds.size) {
+          // Preserve each surviving track's ORIGINAL item record (rawHeader
+          // + child MHODs) so re-serialization is byte-stable — Apple's
+          // items carry a type-100 MHOD whose payload we must not invent.
+          // Only tracks without a prior item get a fresh record.
+          const existingItems = new Map(p.items.map((it) => [it.trackId, it]));
+          p.items = this.db.tracks.map(
+            (t) =>
+              existingItems.get(t.trackId) ?? {
+                trackId: t.trackId,
+                timestamp: dateToMac(new Date()),
+                rawHeader: new Uint8Array(0),
+              },
+          );
+        } else if (p.items.some((it) => !liveIds.has(it.trackId))) {
           p.items = p.items.filter((it) => liveIds.has(it.trackId));
         }
       }
@@ -1337,9 +1360,14 @@ export class Itdb implements Disposable {
     //     classic) — they validate the DB signature even though the device
     //     does not, which is why a DB with an invalid/missing hash72 works
     //     on the iPod but reads as "corrupted" on macOS.
-    // The (IV, random) pair comes from the device's HashInfo file or is
-    // derived from a validly-signed DB already on the device (the signature
-    // carries both; see `resolveHash72Key`).
+    // A parsed DB from a HASH58 device may therefore carry a hash72
+    // signature that Apple's tools validate. Re-signing is mandatory in
+    // that case: our re-serialization changes the bytes the signature
+    // covers, so leaving Apple's original signature intact makes it stale
+    // — the exact "corrupted library" the user saw on a populated nano 4G.
+    const carriedHash72Signature = this.originalItunesDb &&
+      this.originalItunesDb.length >= 0x74 &&
+      new DataView(this.originalItunesDb.buffer, this.originalItunesDb.byteOffset).getUint16(0x70, true) === 3;
     const hash72Key =
       this.hash72IvRandom ??
       (await this.resolveHash72Key(await this.readCurrentItunesDb().catch(() => undefined)));
@@ -1351,7 +1379,7 @@ export class Itdb implements Disposable {
           "the device's signing pair from a validly-signed database, then retry.",
       );
     }
-    if (hash72Key && this.checksumPlatformSupportsHash72 && checksum !== 'none') {
+    if (hash72Key && (hash72Required || carriedHash72Signature) && checksum !== 'none') {
       bytesToWrite = await applyHash72(bytesToWrite, hash72Key.iv, hash72Key.random);
       this.hash72IvRandom = hash72Key;
       // Persist the signing key to the device (libgpod reads this file). Best
@@ -1520,7 +1548,7 @@ export class Itdb implements Disposable {
    * closed on null rather than writing a DB Apple's tools would reject.
    */
   private async resolveHash72Key(currentDb: Uint8Array | undefined): Promise<{ iv: Uint8Array; random: Uint8Array } | null> {
-    if (!this.checksumPlatformSupportsHash72) return null;
+    if (!this.checksumPlatformSupportsHash72 && checksumTypeForDevice(this.options.device) !== 'hash58') return null;
     // 1. HashInfo file on the device.
     try {
       const raw = await this.fs.readFile(fsPath(IpodPaths.HASHINFO));

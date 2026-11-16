@@ -995,7 +995,63 @@ test('Itdb replace-library flow rebuilds the master playlist and albums for the 
   assert(mhlps === 1, 'single mhlp playlist section after a replace-library sync');
 });
 
-console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
+test('populated nano 4G DB: open->save round-trip is byte-identical and hash72 signature stays valid', async () => {
+  const fixturePath = resolve(root, 'src/__tests__/fixtures/iTunesDB-nano4g-hash58.bin');
+  const fixture = new Uint8Array(readFileSync(fixturePath));
+  const guid = '000A27001DD6F0A8';
+  const hash58fs = createMemoryFs({
+    '/iPod_Control/iTunes/iTunesDB': fixture,
+    '/iPod_Control/Device/SysInfo': new TextEncoder().encode(`ModelNumStr: MB598\nFireWireGUID: ${guid}\nSerialNumber: ABC123\n`),
+  } as Record<string, Uint8Array>);
+  const dev = detectDevice('MB598');
+  dev.firewireGuid = guid;
 
+  // A parsed (populated, previously-synced) DB carries Apple's hash72
+  // signature in the mhbd header (hashing_scheme@0x70 = 3) in addition to
+  // hash58. Re-serializing must preserve the bytes exactly — the master
+  // playlist item MHODs are part of the record and must not be dropped —
+  // AND the hash72 signature must be re-signed over the new content, or
+  // Apple Music / Finder flags the DB as corrupted.
+  const sigBefore = new DataView(fixture.buffer, fixture.byteOffset).getUint16(0x70, true);
+  assert(sigBefore === 3, 'fixture carries the hash72 signature Apple validates');
+  {
+    using itdb = await Itdb.open(hash58fs, { device: dev });
+    await itdb.save();
+    const out = hash58fs.files.get('/iPod_Control/iTunes/iTunesDB')!;
+    assert(out.length === fixture.length && sameBytes(out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength), fixture.buffer.slice(fixture.byteOffset, fixture.byteOffset + fixture.byteLength)), 'open->save is byte-identical (master item MHODs preserved)');
+    const check = new Uint8Array(out);
+    assert(new DataView(check.buffer, check.byteOffset).getUint16(0x70, true) === 3, 're-signed DB keeps hashing_scheme@0x70 = 3');
+    const recovered = await extractHash72IvRandom(check);
+    assert(recovered !== null, 're-signed DB has a VALID hash72 signature (Apple check passes)');
+  }
+});
+
+test('populated nano 4G DB: save after addTrack re-signs hash72 (Apple validation passes)', async () => {
+  const fixturePath = resolve(root, 'src/__tests__/fixtures/iTunesDB-nano4g-hash58.bin');
+  const fixture = new Uint8Array(readFileSync(fixturePath));
+  const guid = '000A27001DD6F0A8';
+  const fs2 = createMemoryFs({
+    '/iPod_Control/iTunes/iTunesDB': fixture,
+    '/iPod_Control/Device/SysInfo': new TextEncoder().encode(`ModelNumStr: MB598\nFireWireGUID: ${guid}\nSerialNumber: ABC123\n`),
+  } as Record<string, Uint8Array>);
+  const dev2 = detectDevice('MB598');
+  dev2.firewireGuid = guid;
+  {
+    using itdb = await Itdb.open(fs2, { device: dev2 });
+    const mp3 = new Uint8Array(16);
+    mp3.set([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 6], 0);
+    await itdb.addTrack({ title: 'New Track', artist: 'Test' }, mp3);
+    await itdb.save();
+    const out = fs2.files.get('/iPod_Control/iTunes/iTunesDB')!;
+    const check = new Uint8Array(out);
+    assert(new DataView(check.buffer, check.byteOffset).getUint16(0x70, true) === 3, 'hash72 scheme survives the modify');
+    const recovered = await extractHash72IvRandom(check);
+    assert(recovered !== null, 'hash72 signature re-signed over the MODIFIED content (Apple check passes)');
+    const parsed = parseDatabase(check.buffer.slice(check.byteOffset, check.byteOffset + check.byteLength) as ArrayBuffer);
+    assert(parsed.tracks.length === 9, 'added track makes 9 tracks');
+  }
+});
+
+console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
 if (failed > 0) process.exit(1);
